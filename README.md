@@ -1,6 +1,6 @@
 # CloudPulse
 
-From the outside, CloudPulse is a simple **Dashboard + File Upload** application. Its true purpose is to demonstrate enterprise DevOps practices end-to-end behind the scenes: multi-stage Docker images, Kubernetes manifests, secret management with Terraform, image publishing to GHCR via GitHub Actions, and a local environment that spins up with a single command.
+From the outside, CloudPulse is a simple **Dashboard + File Upload** application. Its true purpose is to demonstrate enterprise DevOps practices end-to-end behind the scenes: multi-stage Docker images, Kubernetes manifests, secret management with Terraform, image publishing to GHCR via GitHub Actions (authenticated with the built-in `GITHUB_TOKEN`, no personal access tokens), containerized tests with Docker Compose, and a local environment that spins up with a single command.
 
 The application is built with **Laravel 13 + React 19 (Inertia)**. The dashboard displays the real-time health status and latencies of MySQL (primary and replica), Redis, and object storage; uploaded file SHA-256 hashes are calculated asynchronously by a queue worker.
 
@@ -12,6 +12,7 @@ The application is built with **Laravel 13 + React 19 (Inertia)**. The dashboard
 - [Quick Start](#quick-start)
 - [Configuration and Secret Management](#configuration-and-secret-management)
 - [Container Images](#container-images)
+- [Tests and Code Quality (Docker Compose)](#tests-and-code-quality-docker-compose)
 - [CI/CD](#cicd)
 - [Deployment to a Real Cluster (GHCR)](#deployment-to-a-real-cluster-ghcr)
 - [Terraform Workflow](#terraform-workflow)
@@ -59,13 +60,14 @@ When a file is uploaded, the flow is as follows:
 | Web Server | Nginx (non-root user, 8080) + PHP-FPM |
 | Orchestration | Kubernetes (minikube on Windows; kind on Linux/macOS/WSL2), HPA, PodDisruptionBudget |
 | IaC | Terraform (`hashicorp/kubernetes` provider) |
-| CI/CD | GitHub Actions, GitHub Container Registry (GHCR) |
+| Testing and Quality | PHPUnit 12 (`php artisan test`), Laravel Pint, Docker Compose test runner |
+| CI/CD | GitHub Actions (built-in `GITHUB_TOKEN`, no PAT), GitHub Container Registry (GHCR) |
 
 ## Directory Structure
 
 ```text
-laravel-react-devops-project/
-├── .github/workflows/ci-cd.yml      # Test, lint, build images, and push to GHCR
+CloudPulse/
+├── .github/workflows/ci-cd.yml      # Test, lint, validate, build images, push to GHCR, create release
 ├── k8s/
 │   ├── configmap-secret.yaml        # ConfigMap + Secret (Secret placeholders are filled via make)
 │   ├── mysql-statefulset.yaml       # MySQL primary and replica
@@ -81,8 +83,9 @@ laravel-react-devops-project/
 │   ├── nginx.conf.template
 │   ├── php-fpm.conf
 │   └── php.ini
-├── src/                             # Laravel + React application
+├── src/                             # Laravel + React application (tests in src/tests/)
 ├── Dockerfile                       # Multi-stage: Node build, Composer, php-fpm (app), Nginx (web)
+├── docker-compose.yml               # Tests, lint, and frontend build in containers (does not run the app)
 ├── minikube.ps1                     # Windows 11 + minikube: single-command setup (PowerShell)
 ├── Makefile                         # kind-based equivalent for Linux, macOS, WSL2
 ├── .gitattributes                   # Keep line endings as LF (important for Windows)
@@ -118,7 +121,7 @@ processors=4
 
 #### 2. Installation and Running
 
-Open PowerShell in the directory where you cloned the repo or extracted the zip file (ensure the directory path contains no spaces or special characters, e.g., `C:\dev\laravel-react-devops-project`):
+Open PowerShell in the directory where you cloned the repo or extracted the archive (ensure the directory path contains no spaces or special characters, e.g., `C:\dev\CloudPulse`):
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # for this window only
@@ -211,7 +214,7 @@ Core principle: **No passwords, keys, or URLs are hardcoded in source code, imag
 | Non-sensitive settings (hosts, drivers, limits) | `ConfigMap/cloudpulse-config` | Injected into all containers via `envFrom` |
 | Passwords and keys | `Secret/cloudpulse-secrets` | Injected via `envFrom` / `secretKeyRef` only to containers requiring them |
 | Real secret values | `.secrets.env` (excluded from git, permission `600`) | Generated randomly via `make secrets`; substituted into Secret by `make deploy` via `envsubst` |
-| Version info | Imaged `APP_VERSION`, `APP_COMMIT_SHA` | Injected during build phase by CI or `make build` |
+| Version info | Image build args `APP_VERSION`, `APP_COMMIT_SHA` | Set at build time by CI (`APP_VERSION` is the image version, e.g. `1.0.3`) or by `make build` |
 
 The secrets are: `APP_KEY`, `DB_ROOT_PASSWORD`, `DB_PASSWORD`, `DB_REPLICATION_PASSWORD`, `REDIS_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` (the application derives `AWS_*` keys from these).
 
@@ -237,40 +240,96 @@ docker build --target web -t cloudpulse-web .
 
 Nginx and PHP-FPM run as separate containers, communicating over `127.0.0.1:9000` within the Pod.
 
+## Tests and Code Quality (Docker Compose)
+
+`docker-compose.yml` in the repository root exists only to run the tests and code-quality tools in containers. It does **not** run the application (use `.\minikube.ps1 up` or `make up` for that). The only local requirement is Docker; PHP, Composer, and Node come from the containers. The test suite uses SQLite (`:memory:`) with array/sync drivers and fake storage, so MySQL, Redis, and MinIO are not needed.
+
+Run these from the repository root (the commands are identical in PowerShell, bash, and zsh):
+
+| Command | Action |
+| --- | --- |
+| `docker compose run --rm test` | Runs the whole PHPUnit suite (`php artisan test`) |
+| `docker compose run --rm test --filter=HealthTest` | Runs a single test class or method |
+| `docker compose run --rm test --stop-on-failure` | Stops at the first failure |
+| `docker compose run --rm lint` | Pint style check (`pint --test`, same as the CI `style` job) |
+| `docker compose run --rm fix-style` | Lets Pint fix style errors in place |
+| `docker compose run --rm frontend` | `npm ci` and Vite build (same as the CI `frontend` job) |
+| `docker compose run --rm shell` | Opens an interactive shell in the PHP tools container |
+
+Extra arguments after the service name are passed straight to `php artisan test` / `pint`.
+
+How it works:
+
+- Every service belongs to the `tools` profile, so a plain `docker compose up` starts nothing; `docker compose run --rm <service>` is all you need.
+- The PHP image is built on the first run from an inline Dockerfile (`php:8.4-cli-alpine` with `git`, `unzip`, the `pcntl` extension, and Composer) and tagged `cloudpulse-php-tools:dev`.
+- Source code is mounted from `./src`. `vendor/` and `node_modules/` live in named volumes (`php-vendor`, `node-modules`, plus a `composer-cache` volume), which keeps repeated runs fast, especially on Windows. The `vendor/` and `node_modules/` folders on the host are not used.
+- The `test` service runs with `APP_ENV=testing` and a throwaway, test-only `APP_KEY`. If `src/.env` is missing it is created from `.env.example` (the file is git-ignored).
+- To reset the toolchain (for example after dependency problems), remove the containers' volumes with `docker compose --profile tools down -v`.
+
+These commands mirror the CI jobs `backend`, `style`, and `frontend`, so a failure in CI can be reproduced locally. The `infra` job (Terraform and kubeconform) is not part of the Compose file; run `make validate` for those checks.
+
 ## CI/CD
 
-`.github/workflows/ci-cd.yml` executes the following jobs:
+`.github/workflows/ci-cd.yml` runs on pushes to `main`, `v*` tags, pull requests targeting `main`, and manual runs (`workflow_dispatch`). A newer run cancels an in-progress run of the same ref only for pull requests.
 
-| Job | Trigger | Description |
+| Job | Runs on | Description |
 | --- | --- | --- |
-| `backend` | Every push and PR | Composer setup, PHPUnit tests |
-| `style` | Every push and PR | Pint code formatting check (informational, non-blocking) |
-| `frontend` | Every push and PR | `npm ci` and Vite build |
-| `infra` | Every push and PR | Manifest validation via `terraform fmt`, `terraform validate`, and kubeconform |
-| `build-and-push` | `main` and `v*` tags (skipped on PRs) | Builds `app` and `web` images, pushes to GHCR |
+| `backend` | All runs | Composer setup and `composer test` (PHPUnit, SQLite in memory) |
+| `style` | All runs | Pint code formatting check (informational, non-blocking) |
+| `frontend` | All runs | `npm ci` and Vite build (Node 22) |
+| `infra` | All runs | `terraform fmt`, `terraform validate`, and kubeconform manifest validation |
+| `build-and-push` | `main`, `v*` tags, manual runs (skipped on PRs) | Builds the `app` and `web` images and pushes them to GHCR; requires `backend`, `frontend`, and `infra` to pass |
+| `release` | `main` only | Creates a git tag and a GitHub Release for the version that was just published |
 
-**Required Secret:** Add a secret named `GHCR_PAT` under repository settings (*Settings → Secrets and variables → Actions*). The value must be a *classic* GitHub Personal Access Token with `write:packages` scope. The workflow contains no other secrets.
+### Authentication: no secrets to configure
 
-Images are published as `ghcr.io/<owner>/cloudpulse-app` and `ghcr.io/<owner>/cloudpulse-web`. Tags: branch name, `sha-<short sha>`, semver tags for releases, and `latest` for `main`.
+The workflow does not need any repository secrets. Logging in to GHCR and creating releases both use the built-in `secrets.GITHUB_TOKEN`, which GitHub generates for each run and revokes when the run ends. There is no personal access token and no `GHCR_PAT` secret; if you created one earlier, you can delete it under *Settings → Secrets and variables → Actions*.
 
-> If Pint reports formatting differences in the `style` job, fix them with `cd src && vendor/bin/pint`; you can make this step strictly required by removing `continue-on-error: true` from the workflow.
+Permissions are granted per job: the workflow default is `contents: read`, only `build-and-push` adds `packages: write`, and only `release` adds `contents: write`.
+
+> If a package was first published with a personal access token, it may not be linked to this repository and the push can be denied. Open the package's settings on GitHub and add the repository under *Manage Actions access* with the *Write* role.
+
+### Versioning and image tags
+
+Every push to `main` produces the version `<VERSION_BASE>.<run number>` (for example `1.0.3`). Commit messages do not affect the version. To bump the minor or major version, change `VERSION_BASE` in the workflow (for example to `"1.1"`). Add `[skip ci]` to a commit message to skip the whole workflow.
+
+Images are published as `ghcr.io/<owner>/cloudpulse-app` and `ghcr.io/<owner>/cloudpulse-web` (the owner name is lowercased automatically):
+
+| Tag | When |
+| --- | --- |
+| `1.0.3` (`<VERSION_BASE>.<run number>`) | Push to `main` |
+| `latest` | Push to `main` |
+| `main` (branch name) | Push to `main` |
+| `sha-<short sha>` | Every published build |
+| `1.2.3` and `1.2` | Pushing a `v1.2.3` git tag |
+
+After `build-and-push` succeeds on `main`, the `release` job creates the git tag `v1.0.3` and a GitHub Release with generated notes. Tags created with `GITHUB_TOKEN` do not trigger new workflow runs, so a release never causes a second build. Docker layers are cached with the GitHub Actions cache (one scope per image).
+
+> If Pint reports formatting differences in the `style` job, fix them with `docker compose run --rm fix-style` (or `cd src && vendor/bin/pint`); you can make this step strictly required by removing `continue-on-error: true` from the workflow.
 
 ## Deployment to a Real Cluster (GHCR)
 
-Once CI publishes images to GHCR, set the active context in your kubeconfig and run:
+Once CI has published images to GHCR, set the active context in your kubeconfig and run (use the lowercase owner name; `IMAGE_TAG` can be a version such as `1.0.3` or `sha-<short-sha>`):
 
 ```bash
-export GHCR_USERNAME=<github-username>
-export GHCR_PAT=<token-with-read:packages-scope>      # image pull secret created for private packages
-
 make deploy \
   IMAGE_REPO=ghcr.io/<owner>/cloudpulse \
-  IMAGE_TAG=sha-<short-sha> \
+  IMAGE_TAG=1.0.<run-number> \
   KUBE_CONTEXT=<context> \
   APP_URL=https://cloudpulse.example.com
 ```
 
-GHCR packages are private by default; providing `GHCR_PAT` allows `make deploy` to create an image pull secret named `ghcr-pull-secret` (token is not saved to disk). On a production cluster, you will need to configure your own `StorageClass`, Ingress, and TLS; this repository does not include an Ingress.
+Newly published GHCR packages are private unless you change their visibility. You have two options:
+
+- **Make the package public** (package settings → *Change visibility*): no credentials are needed to pull the images.
+- **Keep it private** and give the machine that runs `make deploy` a read-only token. This is a separate credential from CI: `GITHUB_TOKEN` only exists for the duration of a workflow run, so a cluster cannot use it.
+
+```bash
+export GHCR_USERNAME=<github-username>
+export GHCR_PAT=<classic-token-with-read:packages-scope>      # only used to create the image pull secret
+```
+
+When `GHCR_PAT` is set, `make deploy` creates an image pull secret named `ghcr-pull-secret` (the token is not saved to disk). The same variables work with `.\minikube.ps1 deploy`. On a production cluster, you will need to configure your own `StorageClass`, Ingress, and TLS; this repository does not include an Ingress.
 
 ## Terraform Workflow
 
@@ -283,7 +342,7 @@ make cluster metrics tf-apply build load
 make deploy CONFIG_SOURCE=terraform
 ```
 
-`make tf-apply` passes values from `.secrets.env` to Terraform via `TF_VAR_*` environment variables; secrets are never written to `.tf` files. If `GHCR_USERNAME` and `GHCR_PAT` are defined, an image pull secret is also provisioned.
+`make tf-apply` passes values from `.secrets.env` to Terraform via `TF_VAR_*` environment variables; secrets are never written to `.tf` files. If `GHCR_USERNAME` and `GHCR_PAT` are defined, an optional image pull secret is also provisioned (needed only to pull private GHCR packages; CI itself does not use these variables).
 
 The `app_config` default values in `terraform/variables.tf` match the keys in `k8s/configmap-secret.yaml`; update both if changes are made to either.
 
@@ -319,6 +378,7 @@ HPA scales the web Deployment between 2 and 6 replicas when CPU utilization exce
 ## Security Notes
 
 - No plain-text secrets exist in the repository, images, or workflows. `.secrets.env`, `.env`, and `*.tfstate` are excluded via `.gitignore` and `.dockerignore`.
+- CI uses only the built-in, short-lived `GITHUB_TOKEN` with per-job permissions (`contents: read` by default; `packages: write` and `contents: write` only where needed). No long-lived personal access token is stored in the repository secrets.
 - Nginx, worker, migrate Job, Redis, and MinIO run as non-root users; all Pods define `seccompProfile: RuntimeDefault` and most enforce `allowPrivilegeEscalation: false`. The PHP-FPM master process and MySQL entrypoint start as root inside their containers before dropping privileges to `www-data` / `mysql` workers (standard behavior of official images).
 - Health endpoints do not leak exception stack traces to external clients; only exception class names are returned while detailed traces are logged.
 - File upload functionality includes extension/MIME validation, size restrictions, and per-IP rate limiting (`CLOUDPULSE_UPLOADS_PER_MINUTE`).
@@ -342,11 +402,15 @@ HPA scales the web Deployment between 2 and 6 replicas when CPU utilization exce
 | Replica displays `Replica_SQL_Running: No` | Check the `Last_SQL_Error` field in `make replica-status`. If replica volume was wiped, re-seeding is required (see limitations) |
 | Large file uploads fail | Ensure setting consistency across the stack: `NGINX_CLIENT_MAX_BODY_SIZE` ≥ `PHP_POST_MAX_SIZE` ≥ `PHP_UPLOAD_MAX_FILESIZE` ≥ `CLOUDPULSE_MAX_UPLOAD_KB` |
 | MinIO upload checksum error | Add `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` environment variable to the Pod (via ConfigMap) |
+| First `docker compose run --rm test` is slow | The PHP tools image is built and `vendor/` is installed into the `php-vendor` volume on the first run. Later runs reuse both |
+| Compose tests fail with dependency or autoload errors | Reset the toolchain volumes: `docker compose --profile tools down -v`, then run the command again |
+| CI `build-and-push` is denied when pushing to GHCR | The package may have been created with an old PAT and is not linked to this repository. Add the repository under the package's *Manage Actions access* with the *Write* role (see [CI/CD](#cicd)) |
 
 ## Known Limitations
 
 - **MinIO Image:** MinIO community edition no longer publishes official pre-built container images. By default, Chainguard's free image is used, which only provides a `latest` tag. For production workloads, mirror and tag images in a private registry or migrate to an S3-compatible alternative like Garage or SeaweedFS; the application communicates strictly via the S3 protocol.
 - **MySQL Replication** is intended as a educational/portfolio setup. Binary log retention is configured for 7 days; if the replica disk is reset after logs have expired on the primary, re-seeding is required (via mysqldump or CLONE). Use a MySQL operator in production environments.
+- The tests run against SQLite and fake storage (locally via Docker Compose and in CI). Real MySQL, Redis, and S3 behavior, including replication, is only exercised in the cluster (see `/readyz` and `make replica-status`).
 - Redis and MinIO run single instances without high availability guarantees.
 - The `metrics` target disables kubelet TLS verification (`--kubelet-insecure-tls`) for kind; do not apply this configuration to production clusters.
 - Ingress setup, TLS termination, and monitoring suites (Prometheus/Grafana) are out of scope and serve as logical next steps.
