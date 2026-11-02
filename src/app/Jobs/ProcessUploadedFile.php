@@ -17,17 +17,15 @@ class ProcessUploadedFile implements ShouldQueue
 
     public int $backoff = 5;
 
-    public function __construct(public readonly int $fileUploadId)
-    {
-    }
+    public function __construct(public readonly int $fileUploadId) {}
 
     public function handle(): void
     {
-        
+
         $file = FileUpload::query()->useWritePdo()->find($this->fileUploadId);
 
         if ($file === null) {
-            return; 
+            return;
         }
 
         $stream = Storage::disk($file->disk)->readStream($file->path);
@@ -36,7 +34,6 @@ class ProcessUploadedFile implements ShouldQueue
             throw new RuntimeException("Cannot read [{$file->path}] from disk [{$file->disk}].");
         }
 
-        
         $context = hash_init('sha256');
         hash_update_stream($context, $stream);
         fclose($stream);
@@ -47,7 +44,6 @@ class ProcessUploadedFile implements ShouldQueue
         ]);
     }
 
-    
     public function failed(?Throwable $exception): void
     {
         FileUpload::query()

@@ -16,7 +16,7 @@ class DashboardController extends Controller
                 'env' => config('app.env'),
                 'version' => config('cloudpulse.version'),
                 'commit' => config('cloudpulse.commit'),
-                
+
                 'pod' => gethostname(),
             ],
             'limits' => [
@@ -25,7 +25,6 @@ class DashboardController extends Controller
             ],
             'pollSeconds' => config('cloudpulse.status_poll_seconds'),
 
-            
             'files' => fn () => FileUpload::query()
                 ->latest()
                 ->limit(50)

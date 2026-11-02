@@ -11,12 +11,12 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         then: function (): void {
-            
+
             Route::middleware([])->group(base_path('routes/health.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        
+
         $proxies = env('TRUSTED_PROXIES', '*');
         $middleware->trustProxies(
             at: $proxies === '*' ? '*' : array_map('trim', explode(',', $proxies)),

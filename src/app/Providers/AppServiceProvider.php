@@ -16,7 +16,7 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-       
+
         RateLimiter::for('uploads', fn (Request $request) => Limit::perMinute(
             config('cloudpulse.uploads_per_minute'),
         )->by($request->ip()));

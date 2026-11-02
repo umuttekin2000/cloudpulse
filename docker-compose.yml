@@ -1,0 +1,97 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CloudPulse: test and code quality tools (Docker Compose)
+#
+# This file does NOT run the application (use minikube.ps1 / make up for that). 
+# It is intended for running CI checks locally in the same environment. Since tests
+# use SQLite (:memory:) and fake storage, MySQL/Redis/MinIO are not required.
+#
+#   docker compose run --rm test                        # all tests
+#   docker compose run --rm test --filter=HealthTest    # single class / method
+#   docker compose run --rm test --stop-on-failure      # stop on first failure
+#   docker compose run --rm lint                        # Pint: style check (like in CI)
+#   docker compose run --rm fix-style                   # Pint: fixes style errors
+#   docker compose run --rm frontend                    # npm ci + vite build
+#   docker compose run --rm shell                       # to work manually inside
+#
+# Source code is mounted from the ./src folder; vendor and node_modules are stored in
+# named volumes for faster builds (especially on Windows).
+# ─────────────────────────────────────────────────────────────────────────────
+name: cloudpulse-tools
+
+x-php: &php
+  build:
+    context: ./docker
+    dockerfile_inline: |
+      FROM php:8.4-cli-alpine
+      RUN apk add --no-cache git unzip \
+          && apk add --no-cache --virtual .build-deps $$PHPIZE_DEPS \
+          && docker-php-ext-install -j"$$(nproc)" pcntl \
+          && apk del --no-network .build-deps
+      COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+      WORKDIR /app
+  image: cloudpulse-php-tools:dev
+  working_dir: /app
+  environment:
+    APP_ENV: testing
+    APP_KEY: "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    COMPOSER_HOME: /tmp/composer
+    COMPOSER_NO_INTERACTION: "1"
+    COMPOSER_MEMORY_LIMIT: "-1"
+  volumes:
+    - ./src:/app
+    - php-vendor:/app/vendor
+    - composer-cache:/tmp/composer/cache
+  profiles: ["tools"]
+
+services:
+  test:
+    <<: *php
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        composer install --no-progress --prefer-dist
+        [ -f .env ] || cp .env.example .env
+        php artisan config:clear --ansi
+        exec php artisan test "$$@"
+      - test-runner
+
+  lint:
+    <<: *php
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        composer install --no-progress --prefer-dist
+        exec vendor/bin/pint --test "$$@"
+      - lint-runner
+
+  fix-style:
+    <<: *php
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        composer install --no-progress --prefer-dist
+        exec vendor/bin/pint "$$@"
+      - fix-style-runner
+
+  shell:
+    <<: *php
+    entrypoint: ["/bin/sh"]
+    stdin_open: true
+    tty: true
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./src:/app
+      - node-modules:/app/node_modules
+    entrypoint: ["/bin/sh", "-ec", "npm ci && exec npm run build"]
+    profiles: ["tools"]
+
+volumes:
+  php-vendor:
+  composer-cache:
+  node-modules:

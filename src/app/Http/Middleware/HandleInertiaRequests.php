@@ -8,15 +8,11 @@ use Inertia\Middleware;
 class HandleInertiaRequests extends Middleware
 {
     /**
-     * 
-     *
      * @var string
      */
     protected $rootView = 'app';
 
     /**
-     * 
-     *
      * @return array<string, mixed>
      */
     public function share(Request $request): array

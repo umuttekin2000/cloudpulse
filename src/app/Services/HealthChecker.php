@@ -11,8 +11,6 @@ use Throwable;
 class HealthChecker
 {
     /**
-     * 
-     *
      * @return array{status: string, checked_at: string, checks: array<string, array{status: string, latency_ms: float|null, error: string|null}>}
      */
     public function report(): array
@@ -51,7 +49,7 @@ class HealthChecker
                 'error' => null,
             ];
         } catch (Throwable $e) {
-            
+
             Log::warning('Health check failed', [
                 'exception' => $e::class,
                 'message' => $e->getMessage(),

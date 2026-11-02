@@ -35,13 +35,11 @@ class FileController extends Controller
             'status' => FileUpload::STATUS_PENDING,
         ]);
 
-        
         ProcessUploadedFile::dispatch($file->id);
 
         return back()->with('success', "{$file->original_name} was uploaded and is being processed.");
     }
 
-    
     public function download(FileUpload $file): StreamedResponse
     {
         $storage = Storage::disk($file->disk);

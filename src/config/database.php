@@ -1,7 +1,5 @@
 <?php
 
-
-
 return [
 
     'default' => env('DB_CONNECTION', 'mysql'),
@@ -11,7 +9,6 @@ return [
         'mysql' => [
             'driver' => 'mysql',
 
-            
             'write' => [
                 'host' => [env('DB_HOST', '127.0.0.1')],
             ],
@@ -19,7 +16,6 @@ return [
                 'host' => [env('DB_READ_HOST') ?: env('DB_HOST', '127.0.0.1')],
             ],
 
-            
             'sticky' => true,
 
             'port' => env('DB_PORT', '3306'),
@@ -34,13 +30,11 @@ return [
             'strict' => true,
             'engine' => null,
 
-            
             'options' => [
                 PDO::ATTR_TIMEOUT => (int) env('DB_TIMEOUT', 3),
             ],
         ],
 
-        
         'sqlite' => [
             'driver' => 'sqlite',
             'database' => env('DB_DATABASE', database_path('database.sqlite')),
