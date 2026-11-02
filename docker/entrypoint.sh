@@ -1,3 +1,4 @@
+#!/bin/sh
 set -eu
 
 if [ "${SKIP_LARAVEL_CACHE:-0}" != "1" ]; then
