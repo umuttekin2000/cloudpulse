@@ -2,9 +2,15 @@
 # CloudPulse CI/CD
 # Pull request  : backend tests, style, frontend build, infrastructure validation
 # main / v* tag : all of the above + builds both images (app, web) and pushes to GHCR
-# Required repository secret (Settings > Secrets and variables > Actions):
-# GHCR_PAT : GitHub Personal Access Token with write:packages permission
-# No passwords/keys are hardcoded in the workflow; only secrets.* are used.
+# No repository secrets are required: GHCR login uses the built-in GITHUB_TOKEN.
+# No passwords/keys are hardcoded in the workflow.
+#
+# Versioning:
+#   Every push to main -> images are tagged <VERSION_BASE>.<run number> (e.g. 1.0.3),
+#   then a git tag + GitHub Release with the same name is created.
+#   The commit message does not affect the version. To bump minor/major,
+#   change VERSION_BASE below (e.g. "1.1"). Add [skip ci] to a commit message
+#   to skip the whole workflow.
 # ─────────────────────────────────────────────────────────────────────────────
 name: CI/CD
 
@@ -25,6 +31,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  VERSION_BASE: "1.0"
   KUBECONFORM_VERSION: v0.8.0
   KUBERNETES_SCHEMA_VERSION: 1.33.0
 
@@ -120,7 +127,7 @@ jobs:
           curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             | tar -xz -C /usr/local/bin kubeconform
 
-      
+
       - name: Validate Kubernetes manifests
         env:
           APP_URL: http://localhost
@@ -161,7 +168,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      
+
       - name: Lowercase repository owner
         id: owner
         run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
@@ -173,7 +180,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata
         id: meta
@@ -182,6 +189,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/${{ matrix.image }}
           tags: |
             type=ref,event=branch
+            type=raw,value=${{ env.VERSION_BASE }}.${{ github.run_number }},priority=1000,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
@@ -201,3 +209,23 @@ jobs:
             APP_COMMIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # After every successful push to main, create a git tag + GitHub Release with the version name.
+  # Tags created with GITHUB_TOKEN do not trigger new workflow runs (no double builds).
+  release:
+    name: Git tag & release
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION_BASE}.${{ github.run_number }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v${VERSION_BASE}.${{ github.run_number }}" \
+            --generate-notes
