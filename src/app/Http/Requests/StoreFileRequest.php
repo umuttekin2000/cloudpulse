@@ -1,0 +1,28 @@
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreFileRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    public function rules(): array
+    {
+        return [
+            'file' => [
+                'required',
+                'file',
+                'max:'.config('cloudpulse.max_upload_kb'),
+                'mimes:'.implode(',', config('cloudpulse.allowed_extensions')),
+            ],
+        ];
+    }
+}

@@ -1,0 +1,27 @@
+# Secrets and local state: MUST NEVER enter the image
+.secrets.env
+.image-tag
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+*.tfstate
+*.tfstate.*
+
+# Keeps the build context clean
+.git
+.github
+k8s
+terraform
+Makefile
+README.md
+**/node_modules
+src/vendor
+src/public/build
+src/public/hot
+src/storage/logs/*.log
+src/tests
+src/phpunit.xml
+**/.DS_Store
+**/*.log

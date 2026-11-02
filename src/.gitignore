@@ -1,0 +1,16 @@
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.phpunit.result.cache
+/.phpunit.cache
+/.idea
+/.vscode
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/vendor
+Thumbs.db

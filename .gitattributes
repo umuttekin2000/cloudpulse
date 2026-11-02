@@ -1,0 +1,3 @@
+# Line endings: Keep them as LF even on Windows.
+# Shell scripts, Dockerfiles, and Makefiles do not work with CRLF.
+* text=auto eol=lf

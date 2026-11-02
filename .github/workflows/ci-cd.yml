@@ -1,0 +1,203 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CloudPulse CI/CD
+# Pull request  : backend tests, style, frontend build, infrastructure validation
+# main / v* tag : all of the above + builds both images (app, web) and pushes to GHCR
+# Required repository secret (Settings > Secrets and variables > Actions):
+# GHCR_PAT : GitHub Personal Access Token with write:packages permission
+# No passwords/keys are hardcoded in the workflow; only secrets.* are used.
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  KUBECONFORM_VERSION: v0.8.0
+  KUBERNETES_SCHEMA_VERSION: 1.33.0
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: mbstring, pdo_sqlite, pcntl
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+
+      - name: Run tests
+        run: composer test
+
+  style:
+    name: Code style (Pint)
+    runs-on: ubuntu-latest
+    # For informational purposes: if there is a style difference, fix it with vendor/bin/pint,
+    # then commit the changes. The workflow will pass after the next push.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Pint
+        run: composer lint
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build
+
+  infra:
+    name: Infrastructure checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+
+      - name: Terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      
+      - name: Validate Kubernetes manifests
+        env:
+          APP_URL: http://localhost
+          IMAGE_APP: example/app:ci
+          IMAGE_WEB: example/web:ci
+          MINIO_IMAGE: example/minio:ci
+          APP_KEY: placeholder
+          DB_ROOT_PASSWORD: placeholder
+          DB_PASSWORD: placeholder
+          DB_REPLICATION_PASSWORD: placeholder
+          REDIS_PASSWORD: placeholder
+          MINIO_ROOT_USER: placeholder
+          MINIO_ROOT_PASSWORD: placeholder
+        run: |
+          vars='$APP_URL $IMAGE_APP $IMAGE_WEB $MINIO_IMAGE $APP_KEY $DB_ROOT_PASSWORD $DB_PASSWORD $DB_REPLICATION_PASSWORD $REDIS_PASSWORD $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD'
+          for f in k8s/*.yaml; do
+            echo "::group::$f"
+            envsubst "$vars" < "$f" | kubeconform -strict -summary -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" -
+            echo "::endgroup::"
+          done
+
+  build-and-push:
+    name: Build & push (${{ matrix.image }})
+    needs: [backend, frontend, infra]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: cloudpulse-app
+            target: app
+          - image: cloudpulse-web
+            target: web
+    steps:
+      - uses: actions/checkout@v7
+
+      
+      - name: Lowercase repository owner
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_COMMIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
